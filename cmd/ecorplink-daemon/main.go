@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -86,7 +87,7 @@ func shouldUseLDAPPassword(cfg *config.Config, caps loginCapabilities) bool {
 	if cfg != nil && cfg.Corplink.Platform == "ldap" {
 		return true
 	}
-	return caps.LoginEnableLDAP && contains(caps.VerifyTypes, "password") && firstLoginOrderIs(caps.LoginOrders, "ldap")
+	return caps.LoginEnableLDAP && slices.Contains(caps.VerifyTypes, "password") && firstLoginOrderIs(caps.LoginOrders, "ldap")
 }
 
 func firstLoginOrderIs(values []string, want string) bool {
@@ -95,15 +96,6 @@ func firstLoginOrderIs(values []string, want string) bool {
 			continue
 		}
 		return v == want
-	}
-	return false
-}
-
-func contains(values []string, want string) bool {
-	for _, v := range values {
-		if v == want {
-			return true
-		}
 	}
 	return false
 }

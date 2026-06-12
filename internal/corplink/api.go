@@ -15,6 +15,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -423,7 +424,7 @@ func (c *Client) loginWithPassword(ctx context.Context, account, password string
 		if err != nil {
 			return err
 		}
-		if !containsString(methods.Auth, "password") {
+		if !slices.Contains(methods.Auth, "password") {
 			return fmt.Errorf("lookup login methods: password auth unavailable")
 		}
 		req.Platform = "ldap"
@@ -450,15 +451,6 @@ func (c *Client) loginWithPassword(ctx context.Context, account, password string
 	}
 	c.extractAndSaveTOTPSecret(ctx, loginResp.Data.URL)
 	return nil
-}
-
-func containsString(values []string, want string) bool {
-	for _, v := range values {
-		if v == want {
-			return true
-		}
-	}
-	return false
 }
 
 // RequestOTP calls the /api/v2/p/otp endpoint to fetch a TOTP setup URI.
