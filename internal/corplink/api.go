@@ -328,6 +328,7 @@ func (c *Client) DiscoverCompany(ctx context.Context, code string) error {
 type LoginMethodInfo struct {
 	Methods         []string `json:"methods"`
 	VerifyTypes     []string `json:"verify_types"`
+	LoginOrders     []string `json:"login_orders,omitempty"`
 	LoginEnableLDAP bool     `json:"login_enable_ldap"`
 }
 
@@ -389,6 +390,7 @@ func (c *Client) LoginMethods(ctx context.Context) (*LoginMethodInfo, error) {
 	return &LoginMethodInfo{
 		Methods:         methods,
 		VerifyTypes:     d.LoginVerifyType,
+		LoginOrders:     d.LoginOrders,
 		LoginEnableLDAP: d.LoginEnableLDAP,
 	}, nil
 }
@@ -399,14 +401,31 @@ func (c *Client) LoginMethods(ctx context.Context) (*LoginMethodInfo, error) {
 // Supports "ldap" platform via config (no hashing, sends platform field).
 // On success the TOTP secret is extracted from the response and saved to the session.
 func (c *Client) LoginWithPassword(ctx context.Context, account, password string) error {
+	return c.loginWithPassword(ctx, account, password, c.platform == "ldap")
+}
+
+// LoginWithLDAPPassword performs LDAP password login.
+func (c *Client) LoginWithLDAPPassword(ctx context.Context, account, password string) error {
+	return c.loginWithPassword(ctx, account, password, true)
+}
+
+func (c *Client) loginWithPassword(ctx context.Context, account, password string, ldap bool) error {
 	type loginReq struct {
 		Password string `json:"password"`
 		UserName string `json:"user_name"`
 		Platform string `json:"platform,omitempty"`
 	}
+	account = strings.TrimSpace(account)
 	req := loginReq{UserName: account}
 
-	if c.platform == "ldap" {
+	if ldap {
+		methods, err := c.CorplinkLoginMethods(ctx, account)
+		if err != nil {
+			return err
+		}
+		if !containsString(methods.Auth, "password") {
+			return fmt.Errorf("lookup login methods: password auth unavailable")
+		}
 		req.Platform = "ldap"
 		req.Password = password
 	} else {
@@ -431,6 +450,15 @@ func (c *Client) LoginWithPassword(ctx context.Context, account, password string
 	}
 	c.extractAndSaveTOTPSecret(ctx, loginResp.Data.URL)
 	return nil
+}
+
+func containsString(values []string, want string) bool {
+	for _, v := range values {
+		if v == want {
+			return true
+		}
+	}
+	return false
 }
 
 // RequestOTP calls the /api/v2/p/otp endpoint to fetch a TOTP setup URI.
@@ -553,9 +581,10 @@ func (c *Client) LoginV1(ctx context.Context, account, password string) error {
 }
 
 // feilianV1EncryptPassword encrypts a password the way the official feilian client does:
-//   KEY = hex(md5("9007199254740991"))   (32 ascii bytes)
-//   IV  = hex(sha1(KEY))[:16]            (16 ascii bytes)
-//   out = lower_hex(AES-256-CBC(KEY, IV, PKCS7(password)))
+//
+//	KEY = hex(md5("9007199254740991"))   (32 ascii bytes)
+//	IV  = hex(sha1(KEY))[:16]            (16 ascii bytes)
+//	out = lower_hex(AES-256-CBC(KEY, IV, PKCS7(password)))
 func feilianV1EncryptPassword(password string) string {
 	key := fmt.Sprintf("%x", md5.Sum([]byte("9007199254740991")))
 	iv := fmt.Sprintf("%x", sha1.Sum([]byte(key)))

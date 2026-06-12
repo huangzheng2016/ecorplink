@@ -36,6 +36,78 @@ var pidFilePathFlag = flag.String("pid-file", "", "pid file path")
 var cleanupRoutesAndDNS = cleanupPersistedRoutes
 var activeConnection connectionSupervisor
 
+type loginCapabilities struct {
+	VerifyTypes     []string
+	LoginOrders     []string
+	LoginEnableLDAP bool
+}
+
+type loginCapabilityCache struct {
+	mu   sync.RWMutex
+	caps loginCapabilities
+}
+
+func (c *loginCapabilityCache) Store(info *corplink.LoginMethodInfo) {
+	if c == nil || info == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.caps = loginCapabilities{
+		VerifyTypes:     append([]string(nil), info.VerifyTypes...),
+		LoginOrders:     append([]string(nil), info.LoginOrders...),
+		LoginEnableLDAP: info.LoginEnableLDAP,
+	}
+}
+
+func (c *loginCapabilityCache) Load() loginCapabilities {
+	if c == nil {
+		return loginCapabilities{}
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return loginCapabilities{
+		VerifyTypes:     append([]string(nil), c.caps.VerifyTypes...),
+		LoginOrders:     append([]string(nil), c.caps.LoginOrders...),
+		LoginEnableLDAP: c.caps.LoginEnableLDAP,
+	}
+}
+
+func (c *loginCapabilityCache) Clear() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.caps = loginCapabilities{}
+}
+
+func shouldUseLDAPPassword(cfg *config.Config, caps loginCapabilities) bool {
+	if cfg != nil && cfg.Corplink.Platform == "ldap" {
+		return true
+	}
+	return caps.LoginEnableLDAP && contains(caps.VerifyTypes, "password") && firstLoginOrderIs(caps.LoginOrders, "ldap")
+}
+
+func firstLoginOrderIs(values []string, want string) bool {
+	for _, v := range values {
+		if v == "" {
+			continue
+		}
+		return v == want
+	}
+	return false
+}
+
+func contains(values []string, want string) bool {
+	for _, v := range values {
+		if v == want {
+			return true
+		}
+	}
+	return false
+}
+
 func main() {
 	if isWindowsService() {
 		flag.Parse()
@@ -313,11 +385,12 @@ func ecorplinkDir() string {
 }
 
 func buildHandler(cfg *config.Config, cm *corplink.Manager, vm *vpnpkg.Manager, shutdown func()) daemonipc.Handler {
+	loginCache := &loginCapabilityCache{}
 	return func(cmd daemonipc.Cmd) daemonipc.Response {
 		ctx := context.Background()
 		cl := cm.Client()
 		log.Printf("[ipc] action=%s", cmd.Action)
-		resp := dispatchHandler(ctx, cmd, cl, cm, vm, cfg, shutdown)
+		resp := dispatchHandler(ctx, cmd, cl, cm, vm, cfg, shutdown, loginCache)
 		if !resp.OK {
 			log.Printf("[ipc] action=%s error=%s", cmd.Action, resp.Error)
 		}
@@ -325,7 +398,7 @@ func buildHandler(cfg *config.Config, cm *corplink.Manager, vm *vpnpkg.Manager, 
 	}
 }
 
-func dispatchHandler(ctx context.Context, cmd daemonipc.Cmd, cl *corplink.Client, cm *corplink.Manager, vm *vpnpkg.Manager, cfg *config.Config, shutdown func()) daemonipc.Response {
+func dispatchHandler(ctx context.Context, cmd daemonipc.Cmd, cl *corplink.Client, cm *corplink.Manager, vm *vpnpkg.Manager, cfg *config.Config, shutdown func(), loginCache *loginCapabilityCache) daemonipc.Response {
 	switch cmd.Action {
 	case daemonipc.ActionShutdown:
 		activeConnection.Stop()
@@ -337,14 +410,17 @@ func dispatchHandler(ctx context.Context, cmd daemonipc.Cmd, cl *corplink.Client
 		if err := cl.DiscoverCompany(ctx, cmd.Company); err != nil {
 			return daemonipc.Response{OK: false, Error: err.Error()}
 		}
+		loginCache.Clear()
 		cm.Session().Save() //nolint:errcheck
 		return daemonipc.Response{OK: true}
 
 	case daemonipc.ActionLoginMethods:
 		info, err := cl.LoginMethods(ctx)
 		if err != nil {
+			loginCache.Clear()
 			return daemonipc.Response{OK: false, Error: err.Error()}
 		}
+		loginCache.Store(info)
 		return daemonipc.Response{OK: true, Data: info}
 
 	case daemonipc.ActionSendCode:
@@ -364,6 +440,8 @@ func dispatchHandler(ctx context.Context, cmd daemonipc.Cmd, cl *corplink.Client
 		var err error
 		if cfg.Corplink.Platform == "feilian_v1" {
 			err = cl.LoginV1(ctx, cmd.Account, cmd.Password)
+		} else if shouldUseLDAPPassword(cfg, loginCache.Load()) {
+			err = cl.LoginWithLDAPPassword(ctx, cmd.Account, cmd.Password)
 		} else {
 			err = cl.LoginWithPassword(ctx, cmd.Account, cmd.Password)
 		}
