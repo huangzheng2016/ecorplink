@@ -63,6 +63,52 @@ func TestNewDirect(t *testing.T) {
 	}
 }
 
+func TestIsPhysicalWithAddrsRejectsLinkLocalIPv4(t *testing.T) {
+	iface := net.Interface{Name: "en9", Flags: net.FlagUp}
+	_, cidr, err := net.ParseCIDR("169.254.10.20/16")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cidr.IP = net.ParseIP("169.254.10.20")
+
+	if isPhysicalWithAddrs(iface, []net.Addr{cidr}) {
+		t.Fatal("link-local IPv4 interface should not be selected for direct internet dialing")
+	}
+}
+
+func TestSelectPhysicalInterfaceSkipsVirtualAndLinkLocalCandidates(t *testing.T) {
+	ifaces := []net.Interface{
+		{Name: "bridge100", Flags: net.FlagUp},
+		{Name: "en9", Flags: net.FlagUp},
+		{Name: "en0", Flags: net.FlagUp},
+	}
+	addrs := map[string][]net.Addr{
+		"bridge100": {mustCIDR(t, "192.168.64.1/24")},
+		"en9":       {mustCIDR(t, "169.254.10.20/16")},
+		"en0":       {mustCIDR(t, "192.168.1.20/24")},
+	}
+
+	iface, err := selectPhysicalInterface(ifaces, func(iface net.Interface) ([]net.Addr, error) {
+		return addrs[iface.Name], nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if iface.Name != "en0" {
+		t.Fatalf("selected interface = %q, want en0", iface.Name)
+	}
+}
+
+func mustCIDR(t *testing.T, raw string) *net.IPNet {
+	t.Helper()
+	ip, cidr, err := net.ParseCIDR(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cidr.IP = ip
+	return cidr
+}
+
 func TestResolver_NonSystem(t *testing.T) {
 	d := &Direct{}
 	r := d.Resolver("8.8.8.8:53")

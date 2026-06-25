@@ -38,6 +38,7 @@ var cleanupRoutesAndDNS = cleanupPersistedRoutes
 var cleanupHostRoutesByIP = forwarder.CleanupHostRoutesByIP
 var activeConnection connectionSupervisor
 var repairOwnership = daemonipc.ChownToDirOwner
+var addScopedHostRoute = forwarder.AddScopedHostRoute
 
 type loginCapabilities struct {
 	VerifyTypes     []string
@@ -753,6 +754,7 @@ func connectVPNOnce(ctx context.Context, cl *corplink.Client, cm *corplink.Manag
 	if !found {
 		return daemonipc.Response{OK: false, Error: fmt.Sprintf("node %d not found", nodeID)}, connectDetails{}
 	}
+	ensureCorplinkNodeRoute(node, physIface)
 
 	privB64, pubB64, err := corplink.GenerateKeyPair()
 	if err != nil {
@@ -1029,8 +1031,17 @@ func ensureCorplinkAPIRoute(ctx context.Context, apiServer, physIface, upstreamD
 		log.Printf("[vpn] corplink api route resolve: %v (continuing)", err)
 		return
 	}
-	if rerr := forwarder.AddScopedHostRoute(apiHost, physIface); rerr != nil {
+	if rerr := addScopedHostRoute(apiHost, physIface); rerr != nil {
 		log.Printf("[vpn] corplink api route %s: %v (continuing)", apiHost, rerr)
+	}
+}
+
+func ensureCorplinkNodeRoute(node corplink.VPNNode, physIface string) {
+	if physIface == "" || net.ParseIP(node.IP).To4() == nil {
+		return
+	}
+	if err := addScopedHostRoute(node.IP, physIface); err != nil {
+		log.Printf("[vpn] corplink node route %s: %v (continuing)", node.IP, err)
 	}
 }
 

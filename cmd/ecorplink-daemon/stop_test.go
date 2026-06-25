@@ -329,6 +329,24 @@ func TestResolveHostnameWithResolverUsesProvidedResolver(t *testing.T) {
 	}
 }
 
+func TestEnsureCorplinkNodeRouteAddsRouteForLiteralNodeIP(t *testing.T) {
+	var calls []string
+	orig := addScopedHostRoute
+	addScopedHostRoute = func(ip, iface string) error {
+		calls = append(calls, ip+" "+iface)
+		return nil
+	}
+	defer func() {
+		addScopedHostRoute = orig
+	}()
+
+	ensureCorplinkNodeRoute(corplink.VPNNode{IP: "198.51.100.10"}, "en0")
+
+	if len(calls) != 1 || calls[0] != "198.51.100.10 en0" {
+		t.Fatalf("route calls = %v, want [198.51.100.10 en0]", calls)
+	}
+}
+
 type fakeHostResolver struct {
 	addrs   map[string][]string
 	queries []string

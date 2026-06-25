@@ -26,9 +26,20 @@ func NewDirect(ifaceName string, upstream []string) *Direct {
 }
 
 // vpnPrefixes lists interface name prefixes that are VPN/virtual/loopback.
-var vpnPrefixes = []string{"utun", "tun", "tap", "lo", "veth", "docker", "br-", "virbr"}
+var vpnPrefixes = []string{
+	"anpi", "awdl", "bridge", "br-", "docker", "gif", "llw", "lo",
+	"p2p", "stf", "tap", "tun", "utun", "vboxnet", "veth", "virbr", "vmnet",
+}
 
 func isPhysical(iface net.Interface) bool {
+	addrs, err := iface.Addrs()
+	if err != nil {
+		return false
+	}
+	return isPhysicalWithAddrs(iface, addrs)
+}
+
+func isPhysicalWithAddrs(iface net.Interface, addrs []net.Addr) bool {
 	if iface.Flags&net.FlagUp == 0 {
 		return false
 	}
@@ -38,10 +49,6 @@ func isPhysical(iface net.Interface) bool {
 			return false
 		}
 	}
-	addrs, err := iface.Addrs()
-	if err != nil {
-		return false
-	}
 	for _, addr := range addrs {
 		var ip net.IP
 		switch v := addr.(type) {
@@ -50,11 +57,34 @@ func isPhysical(iface net.Interface) bool {
 		case *net.IPAddr:
 			ip = v.IP
 		}
-		if ip != nil && ip.To4() != nil && !ip.IsLoopback() {
+		if usableDirectIPv4(ip) {
 			return true
 		}
 	}
 	return false
+}
+
+func usableDirectIPv4(ip net.IP) bool {
+	ip4 := ip.To4()
+	return ip4 != nil &&
+		ip4.IsGlobalUnicast() &&
+		!ip4.IsLoopback() &&
+		!ip4.IsLinkLocalUnicast() &&
+		!ip4.IsUnspecified()
+}
+
+func selectPhysicalInterface(ifaces []net.Interface, addrs func(net.Interface) ([]net.Addr, error)) (*net.Interface, error) {
+	for _, iface := range ifaces {
+		iface := iface
+		ifaceAddrs, err := addrs(iface)
+		if err != nil {
+			continue
+		}
+		if isPhysicalWithAddrs(iface, ifaceAddrs) {
+			return &iface, nil
+		}
+	}
+	return nil, fmt.Errorf("outbound: no suitable physical interface found")
 }
 
 // ResolvedIfaceName returns the actual interface name used (after auto-detect).
@@ -69,9 +99,10 @@ func (d *Direct) ResolvedIfaceName() string {
 }
 
 // Init resolves and locks the interface. Must be called before Dialer()/Resolver().
-// If IfaceName is "", auto-detects the first physical interface:
+// If IfaceName is "", auto-detects the first usable physical interface:
 //   - Has at least one IPv4 unicast address
-//   - Name does not start with: utun, tun, tap, lo, veth, docker, br-, virbr
+//   - Address is not loopback, link-local, or unspecified
+//   - Name does not start with a known VPN/virtual/loopback prefix
 //   - Flag net.FlagUp is set
 func (d *Direct) Init() error {
 	if d.IfaceName != "" {
@@ -103,13 +134,9 @@ func detectPhysicalInterface() (*net.Interface, error) {
 	if err != nil {
 		return nil, fmt.Errorf("outbound: failed to list interfaces: %w", err)
 	}
-	for _, iface := range ifaces {
-		iface := iface
-		if isPhysical(iface) {
-			return &iface, nil
-		}
-	}
-	return nil, fmt.Errorf("outbound: no suitable physical interface found")
+	return selectPhysicalInterface(ifaces, func(iface net.Interface) ([]net.Addr, error) {
+		return iface.Addrs()
+	})
 }
 
 func (d *Direct) refreshAutoIface() {
